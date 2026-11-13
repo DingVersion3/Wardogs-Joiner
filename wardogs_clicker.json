@@ -1,0 +1,24 @@
+{
+  "positions": {
+    "blue": [
+      807,
+      556
+    ],
+    "green": [
+      1132,
+      559
+    ],
+    "red": [
+      953,
+      558
+    ]
+  },
+  "watch": [
+    901,
+    430
+  ],
+  "click_interval_ms": 40,
+  "color_tolerance": 60,
+  "confirm_reads": 3,
+  "window_title": "WARDOGS"
+}
