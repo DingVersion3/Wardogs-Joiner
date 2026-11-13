@@ -5,8 +5,9 @@
 //      Then hover a "watch" spot that is only visible on the faction-select
 //      screen (the faction panel/background works well) and press F6.
 //   2. Pick a team. Press F8 to start/pause clicking, F9 to abort.
-//   3. The watch spot's color is recorded when you start. When it changes
-//      (select screen closed = you were accepted), clicking stops instantly.
+//   3. The watch spot's color is recorded when you start. When it changes,
+//      clicks pause. If it stays changed for confirm_ms (default 2.5s) you're
+//      in and it stops; if the faction screen comes back, clicking resumes.
 //
 // Run the game in Borderless/Windowed mode - exclusive fullscreen can make
 // pixel reads return black, which breaks auto-stop detection.
@@ -63,7 +64,7 @@ type Config struct {
 	Watch           *[2]int           `json:"watch"`             // pixel that changes once you're on a team
 	ClickIntervalMs int               `json:"click_interval_ms"` // time between clicks (~25 clicks/sec)
 	ColorTolerance  int               `json:"color_tolerance"`   // summed RGB difference that counts as "changed"
-	ConfirmReads    int               `json:"confirm_reads"`     // consecutive changed reads before stopping
+	ConfirmMs       int               `json:"confirm_ms"`        // how long the screen must stay changed to count as joined
 	WindowTitle     string            `json:"window_title"`      // only click while this window is focused ("" = any)
 }
 
@@ -153,7 +154,7 @@ func loadConfig() *Config {
 		Positions:       map[string][2]int{},
 		ClickIntervalMs: 40,
 		ColorTolerance:  60,
-		ConfirmReads:    3,
+		ConfirmMs:       2500,
 		WindowTitle:     "WARDOGS",
 	}
 	data, err := os.ReadFile(configPath())
@@ -238,6 +239,7 @@ func run(cfg *Config, team string) {
 	tx, ty := pos[0], pos[1]
 	wx, wy := cfg.Watch[0], cfg.Watch[1]
 	interval := time.Duration(cfg.ClickIntervalMs) * time.Millisecond
+	confirm := time.Duration(cfg.ConfirmMs) * time.Millisecond
 
 	fmt.Printf("\nTarget: %s at (%d, %d)\n", teamLabels[team], tx, ty)
 	fmt.Println("Switch to the game. F8 = start/pause, F9 = abort.")
@@ -246,8 +248,8 @@ func run(cfg *Config, team string) {
 	tapped(vkF9)
 	running := false
 	var baseline rgb
-	changed, clicks := 0, 0
-	var started time.Time
+	clicks := 0
+	var started, changedSince, backSince time.Time
 
 	for {
 		if tapped(vkF9) {
@@ -263,7 +265,8 @@ func run(cfg *Config, team string) {
 					fmt.Println("Watch pixel reads black/empty - use Borderless mode or recalibrate.")
 				}
 				started = time.Now()
-				changed = 0
+				changedSince = time.Time{}
+				backSince = time.Time{}
 				fmt.Printf("RUNNING (baseline %v)\n", baseline)
 			} else {
 				fmt.Println("PAUSED")
@@ -280,20 +283,41 @@ func run(cfg *Config, team string) {
 			continue
 		}
 
-		// Check before clicking so we stop the instant the screen closes
-		if cur, ok := getPixel(wx, wy); ok && colorDiff(cur, baseline) > cfg.ColorTolerance {
-			changed++
-			if changed >= cfg.ConfirmReads {
+		cur, ok := getPixel(wx, wy)
+		isChanged := ok && colorDiff(cur, baseline) > cfg.ColorTolerance
+
+		// Screen changed: stop clicking and wait to see if the join sticks
+		// ("joining..." also changes the screen, so one change isn't enough)
+		if isChanged {
+			backSince = time.Time{}
+			if changedSince.IsZero() {
+				changedSince = time.Now()
+				fmt.Println("Screen changed - holding clicks, confirming join...")
+			}
+			if time.Since(changedSince) >= confirm {
 				fmt.Printf("\nJOINED %s - stopped after %d clicks (%.1fs).\n",
 					teamLabels[team], clicks, time.Since(started).Seconds())
 				beep(1200, 150)
 				beep(1600, 200)
 				return
 			}
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(20 * time.Millisecond)
 			continue
 		}
-		changed = 0
+
+		// Faction screen is back: the join failed, so resume once it's stable for 200ms
+		if !changedSince.IsZero() {
+			if backSince.IsZero() {
+				backSince = time.Now()
+			}
+			if time.Since(backSince) < 200*time.Millisecond {
+				time.Sleep(20 * time.Millisecond)
+				continue
+			}
+			fmt.Println("Back on faction screen - join failed, resuming clicks.")
+			changedSince = time.Time{}
+			backSince = time.Time{}
+		}
 
 		click(tx, ty)
 		clicks++
